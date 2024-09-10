@@ -1,22 +1,24 @@
-#[cfg(feature = "mkl")]
-extern crate intel_mkl_src;
+// #[cfg(feature = "mkl")]
+// extern crate intel_mkl_src;
 
-#[cfg(feature = "accelerate")]
-extern crate accelerate_src;
+// #[cfg(feature = "accelerate")]
+// extern crate accelerate_src;
 
-use candle_core::{safetensors, Device, Tensor, DType};
+use candle_core::{Device, Tensor, DType, IndexOp};
 use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model};
-use hf_hub::api::sync::Api;
-use hf_hub::{Repo, RepoType};
 use tokenizers::Tokenizer;
 use std::fs::File;
 use anyhow::Error as E;
+
+use axum::body::Bytes;
+
 
 pub struct ParlerInferenceModel {
     model: Model,
     tokenizer: Tokenizer,
     device: Device,
+    config: Config,
 }
 
 impl ParlerInferenceModel {
@@ -53,25 +55,59 @@ impl ParlerInferenceModel {
         Ok(Self {
             model,
             tokenizer,
-            device
+            device,
+            config
         })
     }
 
-    // pub fn infer_sentence_embedding(&self, sentence: &str) -> anyhow::Result<Tensor> {
-    //     let tokens = self
-    //         .tokenizer
-    //         .encode(sentence, true)
-    //         .map_err(anyhow::Error::msg)?;
-    //     let token_ids = Tensor::new(tokens.get_ids(), &self.device)?.unsqueeze(0)?;
-    //     let token_type_ids = token_ids.zeros_like()?;
-    //     let start = std::time::Instant::now();
-    //     let embeddings = self.model.forward(&token_ids, &token_type_ids)?;
-    //     println!("time taken for forward: {:?}", start.elapsed());
-    //     println!("embeddings: {:?}", embeddings);
-    //     let embeddings = Self::apply_max_pooling(&embeddings)?;
-    //     println!("embeddings after pooling: {:?}", embeddings);
-    //     let embeddings = Self::l2_normalize(&embeddings)?;
-    //     Ok(embeddings)
-    // }
+    pub fn run_inference(
+        &mut self,
+        text: &str,
+        prompt: &str
+    ) -> anyhow::Result<Bytes> {
+        // Tokenize the text and prompt.
+        let description_tokens = self.tokenizer
+            .encode(prompt, true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+        let description_tensor = Tensor::new(description_tokens, &self.device)?.unsqueeze(0)?;
+    
+        let prompt_tokens = self.tokenizer
+            .encode(text, true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+        let prompt_tensor = Tensor::new(prompt_tokens, &self.device)?.unsqueeze(0)?;
+    
+        // Set up the logits processor for generation.
+        let lp = candle_transformers::generation::LogitsProcessor::new(0, Some(0.0), None);
+    
+        // Run the model to generate audio codes.
+        println!("Generating...");
+        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512)?;  // Mutably use model here
+        let codes = codes.to_dtype(DType::I64)?;
+    
+        // Decode the generated audio codes into PCM audio.
+        let codes = codes.unsqueeze(0)?;
+        let pcm = self.model
+            .audio_encoder
+            .decode_codes(&codes.to_device(&self.device)?)?;
+    
+        // Normalize the audio for proper loudness.
+        let pcm = pcm.i((0, 0))?;
+        let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true)?;
+        let pcm = pcm.to_vec1::<f32>()?;
+    
+        // Write the audio as a WAV file, using the sampling rate from the config.
+        // let mut output = File::create("out.wav")?;
+        // candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, self.config.audio_encoder.sampling_rate)?;
+
+        // Write audio as wave in memory
+        let mut buffer = Vec::new();
+        candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
+    
+        Ok(Bytes::from(buffer))
+    }
 
 }
