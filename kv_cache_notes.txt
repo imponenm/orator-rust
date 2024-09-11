@@ -1,0 +1,53 @@
+I need to make separate KV caches. Maybe something like:
+
+```
+let kv_cache = create_new_cache();
+let result = model.generate_with_cache(input_data, kv_cache).await;
+```
+
+But first, I need to update all the structs that have a mutable KV cache as a member variable. For example: 
+
+```
+pub fn generate(
+    &mut self,
+    prompt_tokens: &Tensor,
+    description_tokens: &Tensor,
+    mut lp: LogitsProcessor,
+    max_steps: usize,
+) -> Result<Tensor> {
+    self.decoder.clear_kv_cache();
+    self.text_encoder.clear_kv_cache();
+
+    ...
+}
+```
+
+
+##### Decoder #####
+
+1. parler_tts.rs
+  a. Attention struct and impl
+    1. A new Attention object gets declared twice in DecoderLayer
+2. Decoder
+  a. The call to clear_kv_cache() comes from an object of type DecoderLayer
+
+TODO:
+I fucked up somewhere. I started giving 2 KV caches in the generate() function even though I didn't need to
+
+I don't think i need to generate the caches in generate, i think it's actually the call to forward within generate() that does the edits, not generate itself (I commented out the lines that would affect this)
+
+
+##### Text Encoder #####
+
+
+I make a call to self.text_encoder.forward(). text_encoder is type T5EncoderModel
+
+T5EncoderModel has an encoder member variable of type T5Stack. The T5EncoderModel's forward function calls T5Stack's forward function
+
+T5Stack's forward function takes a mutable refernce to self, so this is where the issue starts. There's a call to iter_mut() and clear_kv_cache() to investigate
+
+Both these functions affect a block member variable of type Vec<T5Block>
+
+T5Block has a clear_kv_cache() call to fix, and also a forward() call using a T5LayerCrossAttention
+
+T5LayerCrossAttention is the last of it

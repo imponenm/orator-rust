@@ -61,7 +61,7 @@ impl ParlerInferenceModel {
     }
 
     pub fn run_inference(
-        &mut self,
+        &self,
         text: &str,
         prompt: &str
     ) -> anyhow::Result<Bytes> {
@@ -85,6 +85,7 @@ impl ParlerInferenceModel {
     
         // Run the model to generate audio codes.
         println!("Generating...");
+
         let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512)?;  // Mutably use model here
         let codes = codes.to_dtype(DType::I64)?;
     
