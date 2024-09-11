@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()>{
 }
 
 
-fn run_inference (
+async fn run_inference (
     State(model_ctx): State<Arc<parler::ParlerInferenceModel>>, 
     Json(payload): Json<ReqPayload>,
 ) -> impl IntoResponse {
@@ -76,5 +76,7 @@ fn run_inference (
         ),
     };
 
-    // Ok(())
+        // (StatusCode::INTERNAL_SERVER_ERROR,
+        // [(axum::http::header::CONTENT_TYPE, "text/plain")],
+        // "Server Error".into())
 }
