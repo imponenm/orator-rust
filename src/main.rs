@@ -21,6 +21,7 @@ use tokenizers::Tokenizer;
 use std::sync::{Arc, Mutex};
 
 mod parler;
+use candle_transformers::models::parler_tts::PlKVCache;
 
 #[derive(Deserialize)]
 struct ReqPayload {
@@ -63,7 +64,9 @@ async fn run_inference (
     let text = payload.text;
     let prompt = payload.prompt;
 
-    match parler_model.run_inference(&text, &prompt) {
+    let mut cache = PlKVCache::new(parler_model.num_decoder_layers());
+
+    match parler_model.run_inference(&text, &prompt, &mut cache) {
         Ok(audio_data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "audio/wav")],

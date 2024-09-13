@@ -1,41 +1,22 @@
-I need to make separate KV caches. Maybe something like:
+What happens when generate is called?
 
-```
-let kv_cache = create_new_cache();
-let result = model.generate_with_cache(input_data, kv_cache).await;
-```
+1. Self text_encoder (T5EncoderModel) calls forward()
 
-But first, I need to update all the structs that have a mutable KV cache as a member variable. For example: 
+2. Model calls self.decoder.forward()
+2a. self.decoder.forward() iterates through Decoder's self Vec<DecoderLayer>
+2b. Each DecoderLayer calls its self.forward() function
+  2c. self.self_attn.forward() finally updates self.self_attn's Attention object's kv_cache
+  2d. self.cross_attn.forward() finally updates self.self_attn's Attention object's kv_cache
 
-```
-pub fn generate(
-    &mut self,
-    prompt_tokens: &Tensor,
-    description_tokens: &Tensor,
-    mut lp: LogitsProcessor,
-    max_steps: usize,
-) -> Result<Tensor> {
-    self.decoder.clear_kv_cache();
-    self.text_encoder.clear_kv_cache();
 
-    ...
-}
-```
+- The Model object I declare has a member variable 'decoder' of type Decoder.
+- TODO: Decoder has a 'layers' member variable of type Vec<DecoderLayer>. I think I need to create a layer's object to pass into the generate function, and modify Decoder's constructor and forward function to use the given Vec<DecoderLayer>
+  - When Decoder is initialized, it creates a new DecoderLayer for every num_hidden_layers in its DecoderConfig that gets passed to it
 
 
 ##### Decoder #####
 
-1. parler_tts.rs
-  a. Attention struct and impl
-    1. A new Attention object gets declared twice in DecoderLayer
-2. Decoder
-  a. The call to clear_kv_cache() comes from an object of type DecoderLayer
-
-TODO:
-I fucked up somewhere. I started giving 2 KV caches in the generate() function even though I didn't need to
-
-I don't think i need to generate the caches in generate, i think it's actually the call to forward within generate() that does the edits, not generate itself (I commented out the lines that would affect this)
-
+Ya, so I'm very confident I just need to create my own layers object of type Vec<DecodeLayer>
 
 ##### Text Encoder #####
 
@@ -51,3 +32,9 @@ Both these functions affect a block member variable of type Vec<T5Block>
 T5Block has a clear_kv_cache() call to fix, and also a forward() call using a T5LayerCrossAttention
 
 T5LayerCrossAttention is the last of it
+
+
+------
+This is basically the same thing
+
+T5Stack has a vector of T5Block's, and those T5Blocks have two kv_caches. One is self_attn, the other cross_attn

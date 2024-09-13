@@ -9,10 +9,12 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model};
 use tokenizers::Tokenizer;
 use std::fs::File;
+use std::path::PathBuf;
 use anyhow::Error as E;
 
 use axum::body::Bytes;
-
+use candle_transformers::models::parler_tts::PlKVCache;
+use candle_transformers::models::t5::T5PlKvCache;
 
 pub struct ParlerInferenceModel {
     model: Model,
@@ -56,14 +58,15 @@ impl ParlerInferenceModel {
             model,
             tokenizer,
             device,
-            config
+            config,
         })
     }
 
     pub fn run_inference(
         &self,
         text: &str,
-        prompt: &str
+        prompt: &str,
+        cache: &mut PlKVCache
     ) -> anyhow::Result<Bytes> {
         // Tokenize the text and prompt.
         let description_tokens = self.tokenizer
@@ -86,7 +89,11 @@ impl ParlerInferenceModel {
         // Run the model to generate audio codes.
         println!("Generating...");
 
-        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512)?;  // Mutably use model here
+        let mut cache = PlKVCache::new(self.model.num_decoder_layers());
+        let mut t5_cache = T5PlKvCache::new();
+        
+        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut cache, &mut t5_cache)?;
+        
         let codes = codes.to_dtype(DType::I64)?;
     
         // Decode the generated audio codes into PCM audio.
@@ -109,6 +116,10 @@ impl ParlerInferenceModel {
         candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
     
         Ok(Bytes::from(buffer))
+    }
+
+    pub fn num_decoder_layers(&self) -> usize {
+        self.model.decoder.num_layers()
     }
 
 }
