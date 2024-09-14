@@ -53,6 +53,7 @@ impl ParlerInferenceModel {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
 
         let model = Model::new(&config, vb)?;
+        println!("Model loaded.");
 
         Ok(Self {
             model,
@@ -87,11 +88,12 @@ impl ParlerInferenceModel {
         let lp = candle_transformers::generation::LogitsProcessor::new(0, Some(0.0), None);
     
         // Run the model to generate audio codes.
-        println!("Generating...");
+        println!("Creating caches...");
 
         let mut cache = PlKVCache::new(self.model.num_decoder_layers());
         let mut t5_cache = T5PlKvCache::new();
         
+        println!("Running generation...");
         let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut cache, &mut t5_cache)?;
         
         let codes = codes.to_dtype(DType::I64)?;

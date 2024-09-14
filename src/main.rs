@@ -1,13 +1,13 @@
 use axum::{
     extract::{Json, Path, State},
     response::IntoResponse,
-    routing::{get, post},
+    routing::post,
     Router,
     http::StatusCode
 };
 use serde::{Deserialize, Serialize};
 // use std::net::SocketAddr;
-// use tokio::task;
+use tokio::task;
 // use tokio::sync::oneshot;
 // use tokio::io::AsyncWriteExt;
 // use std::fs::File;
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 // use candle_nn::VarBuilder;
 // use candle_transformers::models::parler_tts::{Config, Model};
 // use tokenizers::Tokenizer;
-use std::sync::{Arc};
+use std::sync::Arc;
 
 mod parler;
 // use candle_transformers::models::parler_tts::PlKVCache;
@@ -58,15 +58,16 @@ async fn run_inference (
     State(model_ctx): State<Arc<parler::ParlerInferenceModel>>, 
     Json(payload): Json<ReqPayload>,
 ) -> impl IntoResponse {
-    // TODO: Need to edit parler_tts to use separate KV caches, so that I don't have to make this mutable
-    let parler_model = &*model_ctx;
-
+    let parler_model = Arc::clone(&model_ctx);
     let text = payload.text;
     let prompt = payload.prompt;
 
-    // let mut cache = PlKVCache::new(parler_model.num_decoder_layers());
+    // Spawn a blocking task for CPU-intensive work
+    let result = task::spawn_blocking(move || {
+        parler_model.run_inference(&text, &prompt)
+    }).await.unwrap();  // Unwrap the JoinError
 
-    match parler_model.run_inference(&text, &prompt) {
+    match result {
         Ok(audio_data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "audio/wav")],
@@ -77,9 +78,5 @@ async fn run_inference (
             [(axum::http::header::CONTENT_TYPE, "text/plain")],
             "Failed to generate audio.".into(),
         ),
-    };
-
-        // (StatusCode::INTERNAL_SERVER_ERROR,
-        // [(axum::http::header::CONTENT_TYPE, "text/plain")],
-        // "Server Error".into())
+    }
 }
