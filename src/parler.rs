@@ -119,8 +119,8 @@ impl ParlerInferenceModel {
         Ok(Bytes::from(buffer))
     }
 
-    pub fn num_decoder_layers(&self) -> usize {
-        self.model.decoder.num_layers()
-    }
+    // pub fn num_decoder_layers(&self) -> usize {
+    //     self.model.decoder.num_layers()
+    // }
 
 }
