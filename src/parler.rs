@@ -66,7 +66,7 @@ impl ParlerInferenceModel {
         &self,
         text: &str,
         prompt: &str,
-        cache: &mut PlKVCache
+        // cache: &mut PlKVCache
     ) -> anyhow::Result<Bytes> {
         // Tokenize the text and prompt.
         let description_tokens = self.tokenizer
@@ -115,6 +115,7 @@ impl ParlerInferenceModel {
         let mut buffer = Vec::new();
         candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
     
+        println!("Generation Complete!");
         Ok(Bytes::from(buffer))
     }
 

@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()>{
     let app = Router::new().route("/generate", post(run_inference)).with_state(shared_state);
 
     // Run the app with hyper, listening on port 3000.
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
@@ -64,9 +64,9 @@ async fn run_inference (
     let text = payload.text;
     let prompt = payload.prompt;
 
-    let mut cache = PlKVCache::new(parler_model.num_decoder_layers());
+    // let mut cache = PlKVCache::new(parler_model.num_decoder_layers());
 
-    match parler_model.run_inference(&text, &prompt, &mut cache) {
+    match parler_model.run_inference(&text, &prompt) {
         Ok(audio_data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "audio/wav")],
