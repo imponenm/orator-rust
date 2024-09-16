@@ -7,12 +7,12 @@
 use candle_core::{Device, Tensor, DType, IndexOp};
 use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model, Decoder};
+use candle_transformers::models::t5::T5EncoderModel;
 use tokenizers::Tokenizer;
 use std::fs::File;
 use anyhow::Error as E;
 
 use axum::body::Bytes;
-use candle_transformers::models::t5::T5EncoderModel;
 
 pub struct ParlerInferenceModel {
     model: Model,
@@ -67,6 +67,8 @@ impl ParlerInferenceModel {
         &self,
         text: &str,
         prompt: &str,
+        decoder: &mut Decoder,
+        text_encoder: &mut T5EncoderModel,
     ) -> anyhow::Result<Bytes> {
         println!("Text received: {}.", text);
         let description_tokens = self.tokenizer
@@ -85,12 +87,12 @@ impl ParlerInferenceModel {
     
         let lp = candle_transformers::generation::LogitsProcessor::new(0, Some(0.0), None);
     
-        println!("Creating caches...");
-        let mut decoder = Decoder::new(&self.config.decoder, self.vb.pp("decoder"))?;
-        let mut text_encoder = T5EncoderModel::load(self.vb.pp("text_encoder"), &self.config.text_encoder)?;
+        // println!("Creating caches...");
+        // let mut decoder = Decoder::new(&self.config.decoder, self.vb.pp("decoder"))?;
+        // let mut text_encoder = T5EncoderModel::load(self.vb.pp("text_encoder"), &self.config.text_encoder)?;
         
         println!("Running generation...");
-        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut decoder, &mut text_encoder)?;
+        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, decoder, text_encoder)?;
         
         let codes = codes.to_dtype(DType::I64)?;
         let codes = codes.unsqueeze(0)?;
@@ -103,14 +105,22 @@ impl ParlerInferenceModel {
         let pcm = pcm.to_vec1::<f32>()?;
 
         // let mut output = std::fs::File::create(&args.out_file)?;
-        let mut output = std::fs::File::create("out.wav")?;
-        candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, self.config.audio_encoder.sampling_rate)?;
+        // let mut output = std::fs::File::create("out.wav")?;
+        // candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, self.config.audio_encoder.sampling_rate)?;
     
         let mut buffer = Vec::new();
         candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
     
         println!("Generation Complete!");
         Ok(Bytes::from(buffer))
+    }
+
+    pub fn get_config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn get_vb(&self) -> &VarBuilder<'static> {
+        &self.vb
     }
 
 }

@@ -19,6 +19,8 @@ use tokio::task;
 // use candle_transformers::models::parler_tts::{Config, Model};
 // use tokenizers::Tokenizer;
 use std::sync::Arc;
+use candle_transformers::models::parler_tts::Decoder;
+use candle_transformers::models::t5::T5EncoderModel;
 
 mod parler;
 // use candle_transformers::models::parler_tts::PlKVCache;
@@ -58,13 +60,21 @@ async fn run_inference (
     State(model_ctx): State<Arc<parler::ParlerInferenceModel>>, 
     Json(payload): Json<ReqPayload>,
 ) -> impl IntoResponse {
-    let parler_model = Arc::clone(&model_ctx);
+    // let parler_model = Arc::clone(&model_ctx);
     let text = payload.text;
     let prompt = payload.prompt;
 
+    // let mut decoder = Decoder::new(&self.config.decoder, self.vb.pp("decoder"))?;
+    // let mut text_encoder = T5EncoderModel::load(self.vb.pp("text_encoder"), &self.config.text_encoder)?;
+    let config = model_ctx.get_config();
+    let vb = model_ctx.get_vb();
+    let mut decoder = Decoder::new(&config.decoder, vb.pp("decoder")).unwrap();
+    let mut text_encoder = T5EncoderModel::load(vb.pp("text_encoder"), &config.text_encoder).unwrap();
+
     // Spawn a blocking task for CPU-intensive work
     let result = task::spawn_blocking(move || {
-        parler_model.run_inference(&text, &prompt)
+        model_ctx.run_inference(&text, &prompt, &mut decoder, &mut text_encoder)
+        // parler_model.run_inference(&text, &prompt)
     }).await.unwrap();  // Unwrap the JoinError
 
     match result {
