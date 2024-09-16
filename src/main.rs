@@ -1,11 +1,11 @@
 use axum::{
-    extract::{Json, Path, State},
+    extract::{Json, State},
     response::IntoResponse,
     routing::post,
     Router,
     http::StatusCode
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 // use std::net::SocketAddr;
 use tokio::task;
 // use tokio::sync::oneshot;
@@ -73,10 +73,14 @@ async fn run_inference (
             [(axum::http::header::CONTENT_TYPE, "audio/wav")],
             audio_data,
         ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(axum::http::header::CONTENT_TYPE, "text/plain")],
-            "Failed to generate audio.".into(),
-        ),
+        Err(e) => {
+            eprintln!("Error during inference: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!("Failed to generate audio: {}", e).into(),
+            )
+        },
     }
 }
+

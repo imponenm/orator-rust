@@ -6,14 +6,14 @@
 
 use candle_core::{Device, Tensor, DType, IndexOp};
 use candle_nn::VarBuilder;
-use candle_transformers::models::parler_tts::{Config, Model};
+use candle_transformers::models::parler_tts::{Config, Model, Decoder};
 use tokenizers::Tokenizer;
 use std::fs::File;
-use std::path::PathBuf;
+// use std::path::PathBuf;
 use anyhow::Error as E;
 
 use axum::body::Bytes;
-use candle_transformers::models::parler_tts::PlKVCache;
+// use candle_transformers::models::parler_tts::PlKVCache;
 use candle_transformers::models::t5::T5PlKvCache;
 
 pub struct ParlerInferenceModel {
@@ -21,6 +21,7 @@ pub struct ParlerInferenceModel {
     tokenizer: Tokenizer,
     device: Device,
     config: Config,
+    vb: VarBuilder<'static>,
 }
 
 impl ParlerInferenceModel {
@@ -30,9 +31,8 @@ impl ParlerInferenceModel {
     ) -> anyhow::Result<Self> {
 
         // Set device to GPU if available.
-        let device = Device::new_cuda(0)?;
+        let device = candle_examples::device(true)?;
 
-        // Use the Hugging Face Hub API to load the model files.
         let api = hf_hub::api::sync::Api::new()?;
         let repo = api.repo(hf_hub::Repo::with_revision(
             model_name.to_string(),
@@ -40,19 +40,20 @@ impl ParlerInferenceModel {
             revision.to_string(),
         ));
 
-        // Load the model, config, and tokenizer files.
         println!("Loading model...");
-        let model_file = repo.get("model.safetensors")?;
+        let model_files = if model_name.contains("large") {
+            candle_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?
+        } else {
+            vec![repo.get("model.safetensors")?]
+        };
         let config_file = repo.get("config.json")?;
         let tokenizer_file = repo.get("tokenizer.json")?;
 
-        // Initialize the tokenizer.
         let tokenizer = Tokenizer::from_file(tokenizer_file).map_err(E::msg)?;
-
         let config: Config = serde_json::from_reader(File::open(config_file)?)?;
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
-
-        let model = Model::new(&config, vb)?;
+        
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device)? };
+        let model = Model::new(&config, vb.clone())?;
         println!("Model loaded.");
 
         Ok(Self {
@@ -60,6 +61,7 @@ impl ParlerInferenceModel {
             tokenizer,
             device,
             config,
+            vb
         })
     }
 
@@ -67,9 +69,7 @@ impl ParlerInferenceModel {
         &self,
         text: &str,
         prompt: &str,
-        // cache: &mut PlKVCache
     ) -> anyhow::Result<Bytes> {
-        // Tokenize the text and prompt.
         let description_tokens = self.tokenizer
             .encode(prompt, true)
             .map_err(E::msg)?
@@ -84,36 +84,27 @@ impl ParlerInferenceModel {
             .to_vec();
         let prompt_tensor = Tensor::new(prompt_tokens, &self.device)?.unsqueeze(0)?;
     
-        // Set up the logits processor for generation.
         let lp = candle_transformers::generation::LogitsProcessor::new(0, Some(0.0), None);
     
-        // Run the model to generate audio codes.
         println!("Creating caches...");
-
-        let mut cache = PlKVCache::new(self.model.num_decoder_layers());
+        // let mut cache = PlKVCache::new(self.model.num_decoder_layers());
+        // let mut cache = PlKVCache::new();
         let mut t5_cache = T5PlKvCache::new();
+        let mut decoder = Decoder::new(&self.config.decoder, self.vb.pp("decoder"))?;
         
         println!("Running generation...");
-        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut cache, &mut t5_cache)?;
+        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut decoder, &mut t5_cache)?;
         
         let codes = codes.to_dtype(DType::I64)?;
-    
-        // Decode the generated audio codes into PCM audio.
         let codes = codes.unsqueeze(0)?;
         let pcm = self.model
             .audio_encoder
             .decode_codes(&codes.to_device(&self.device)?)?;
     
-        // Normalize the audio for proper loudness.
         let pcm = pcm.i((0, 0))?;
         let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true)?;
         let pcm = pcm.to_vec1::<f32>()?;
     
-        // Write the audio as a WAV file, using the sampling rate from the config.
-        // let mut output = File::create("out.wav")?;
-        // candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, self.config.audio_encoder.sampling_rate)?;
-
-        // Write audio as wave in memory
         let mut buffer = Vec::new();
         candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
     
