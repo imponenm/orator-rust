@@ -9,12 +9,10 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model, Decoder};
 use tokenizers::Tokenizer;
 use std::fs::File;
-// use std::path::PathBuf;
 use anyhow::Error as E;
 
 use axum::body::Bytes;
-// use candle_transformers::models::parler_tts::PlKVCache;
-use candle_transformers::models::t5::T5PlKvCache;
+use candle_transformers::models::t5::T5EncoderModel;
 
 pub struct ParlerInferenceModel {
     model: Model,
@@ -70,6 +68,7 @@ impl ParlerInferenceModel {
         text: &str,
         prompt: &str,
     ) -> anyhow::Result<Bytes> {
+        println!("Text received: {}.", text);
         let description_tokens = self.tokenizer
             .encode(prompt, true)
             .map_err(E::msg)?
@@ -87,13 +86,11 @@ impl ParlerInferenceModel {
         let lp = candle_transformers::generation::LogitsProcessor::new(0, Some(0.0), None);
     
         println!("Creating caches...");
-        // let mut cache = PlKVCache::new(self.model.num_decoder_layers());
-        // let mut cache = PlKVCache::new();
-        let mut t5_cache = T5PlKvCache::new();
         let mut decoder = Decoder::new(&self.config.decoder, self.vb.pp("decoder"))?;
+        let mut text_encoder = T5EncoderModel::load(self.vb.pp("text_encoder"), &self.config.text_encoder)?;
         
         println!("Running generation...");
-        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut decoder, &mut t5_cache)?;
+        let codes = self.model.generate(&prompt_tensor, &description_tensor, lp, 512, &mut decoder, &mut text_encoder)?;
         
         let codes = codes.to_dtype(DType::I64)?;
         let codes = codes.unsqueeze(0)?;
@@ -104,6 +101,10 @@ impl ParlerInferenceModel {
         let pcm = pcm.i((0, 0))?;
         let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true)?;
         let pcm = pcm.to_vec1::<f32>()?;
+
+        // let mut output = std::fs::File::create(&args.out_file)?;
+        let mut output = std::fs::File::create("out.wav")?;
+        candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, self.config.audio_encoder.sampling_rate)?;
     
         let mut buffer = Vec::new();
         candle_examples::wav::write_pcm_as_wav(&mut buffer, &pcm, self.config.audio_encoder.sampling_rate)?;
@@ -111,9 +112,5 @@ impl ParlerInferenceModel {
         println!("Generation Complete!");
         Ok(Bytes::from(buffer))
     }
-
-    // pub fn num_decoder_layers(&self) -> usize {
-    //     self.model.decoder.num_layers()
-    // }
 
 }

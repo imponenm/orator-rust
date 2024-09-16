@@ -7,8 +7,8 @@ Ther emight be a prblem with order. Each cache should correlate to an Attention 
 
 
 
-Oirignal Implementation:
--------------------------
+Decoder - Oirignal Implementation:
+-----------------------------------
 Lowest abstraction is Attention, which has the root type for kv_cache of Option<(Tensor, Tensor)>
 Attention --> self.kv_cache --> Option<(Tensor, Tensor)>
 
@@ -21,3 +21,12 @@ Decoder --> self.layers --> Vec<DecoderLayer>
 If I could create this Decoder object outside of Model, I think I'd be golden. And I could do this by passing the decoder object to both the Model's initializer and forward() function.
 Model --> self.decoder --> Decoder
 
+
+Text Encoder - Original Implementation:
+---------------------------------------
+Model --> self.text_encoder --> T5EncoderModel
+T5EncoderModel --> self.T5Stack --> ...
+
+T5EncoderModel has a T5Stack that eventually boils down to a T5Attention that has a kv_cache
+
+So just like how we pulled the Decoder out of Model and passed it to generate(), we can also pull T5EncoderModel out of Model and pass it to generate, then call text_encoder.forward() instead of self.text_encoder.forward()
