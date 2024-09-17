@@ -1,20 +1,22 @@
 use anyhow::Error as E;
 use clap::{Parser, ValueEnum};
 
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, IndexOp, Tensor, Device};
 use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model};
-use tokenizers::Tokenizer;
+use tokenizers::{tokenizer, Tokenizer};
 use axum::response::IntoResponse;
 use axum::http::header;
 use axum::body::Body;
 use axum::Router;
+use axum::extract::State;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use axum::routing::post;
+use std::sync::{Arc, Mutex};
 
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct Args {
     /// Run on CPU rather than on GPU.
     #[arg(long, default_value_t = false)]
@@ -101,25 +103,17 @@ enum Which {
     MiniV1,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(_) = tracing_subscriber::fmt::try_init() {
-        println!("Tracing subscriber has already been initialized.");
-    }
-
-    // let app = Router::new().route("/generate", post(generate_audio)).with_state(shared_state);
-    let app = Router::new().route("/generate", post(generate_audio));
-
-    // Run the app with hyper, listening on port 3000.
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+struct AppState {
+    model: Mutex<Model>,
+    tokenizer: Tokenizer,
+    device: Device,
+    config: Config,
+    args: Args,
+    // Add any other shared resources here
 }
 
-async fn generate_audio() -> impl IntoResponse {
-    use tracing_chrome::ChromeLayerBuilder;
-    use tracing_subscriber::prelude::*;
-
-    // let args = Args::parse();
+#[tokio::main]
+async fn main() {
     let args = Args {
         prompt: "Hey, how are you doing today?".to_string(),
         description: "A female speaker delivers a slightly expressive and animated speech with a moderate speed and pitch. The recording is of very high quality, with the speaker's voice sounding clear and very close up.".to_string(),
@@ -146,15 +140,6 @@ async fn generate_audio() -> impl IntoResponse {
     };
     println!("Args: {:?}", args);
 
-    let _guard = if args.tracing {
-        let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
-        if let Err(_) = tracing_subscriber::registry().with(chrome_layer).try_init() {
-            println!("Tracing subscriber has already been initialized.");
-        }
-        Some(guard)
-    } else {
-        None
-    };
     println!(
         "avx: {}, neon: {}, simd128: {}, f16c: {}",
         candle_core::utils::with_avx(),
@@ -169,6 +154,7 @@ async fn generate_audio() -> impl IntoResponse {
 
     let start = std::time::Instant::now();
     let api = hf_hub::api::sync::Api::new().unwrap();
+    let args_clone = args.clone();
     let model_id = match args.model_id {
         Some(model_id) => model_id.to_string(),
         None => match args.which {
@@ -210,16 +196,40 @@ async fn generate_audio() -> impl IntoResponse {
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device).unwrap() };
     let config: Config = serde_json::from_reader(std::fs::File::open(config).unwrap()).unwrap();
     let mut model = Model::new(&config, vb).unwrap();
+    let model_mutex = Mutex::new(model);
     println!("loaded the model in {:?}", start.elapsed());
 
+    let app_state = Arc::new(AppState {
+        model: model_mutex,
+        tokenizer,
+        device,
+        config,
+        args: args_clone,
+        // Initialize other shared resources if any
+    });
+
+    // let app = Router::new().route("/generate", post(generate_audio)).with_state(shared_state);
+    let app = Router::new().route("/generate", post(generate_audio)).with_state(app_state);;
+
+    // Run the app with hyper, listening on port 3000.
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn generate_audio(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let args = &state.args;
+    let tokenizer = &state.tokenizer;
+    let device = &state.device;
+    let config = &state.config;
+
     let description_tokens = tokenizer
-        .encode(args.description, true)
+        .encode(args.description.to_string(), true)
         .map_err(E::msg).unwrap()
         .get_ids()
         .to_vec();
     let description_tokens = Tensor::new(description_tokens, &device).unwrap().unsqueeze(0).unwrap();
     let prompt_tokens = tokenizer
-        .encode(args.prompt, true)
+        .encode(args.prompt.to_string(), true)
         .map_err(E::msg).unwrap()
         .get_ids()
         .to_vec();
@@ -231,12 +241,13 @@ async fn generate_audio() -> impl IntoResponse {
     );
     println!("starting generation...");
     let start = std::time::Instant::now();
-    let codes = model.generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
+    
+    let codes = &state.model.lock().unwrap().generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
     println!("generated codes\n{codes}");
     let codes = codes.to_dtype(DType::I64).unwrap();
     codes.save_safetensors("codes", "out.safetensors").unwrap();
     let codes = codes.unsqueeze(0).unwrap();
-    let pcm = model
+    let pcm = &state.model.lock().unwrap()
         .audio_encoder
         .decode_codes(&codes.to_device(&device).unwrap()).unwrap();
     println!("{pcm}");
@@ -248,14 +259,14 @@ async fn generate_audio() -> impl IntoResponse {
     println!("inference time: {:?}", start.elapsed());
     
     println!("Stream");
-    let header = [
-        (header::CONTENT_TYPE, "audio/wav"),
-        (header::CONTENT_LENGTH, ""),
-        (header::TRANSFER_ENCODING, "chunked"),
-        (header::CACHE_CONTROL, "no-cache, must-revalidate"),
-        (header::PRAGMA, "no-cache"),
+    // let header = [
+    //     (header::CONTENT_TYPE, "audio/wav"),
+    //     (header::CONTENT_LENGTH, ""),
+    //     (header::TRANSFER_ENCODING, "chunked"),
+    //     (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+    //     (header::PRAGMA, "no-cache"),
 
-    ];
+    // ];
     let file = File::open(&args.out_file).await.unwrap();
     let stream = ReaderStream::new(file);
     
