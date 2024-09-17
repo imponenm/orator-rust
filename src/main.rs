@@ -14,6 +14,7 @@ use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use axum::routing::post;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 
 #[derive(Parser, Debug, Clone)]
@@ -242,14 +243,24 @@ async fn generate_audio(State(state): State<Arc<AppState>>) -> impl IntoResponse
     println!("starting generation...");
     let start = std::time::Instant::now();
     
+    // Run inference on separate thread
+    // TODO: Do i need the reference & here?
     let codes = &state.model.lock().unwrap().generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
+    // {
+    //     let mut model = state.model.lock().unwrap();
+    //     let codes = *model.generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
+    // }
+
     println!("generated codes\n{codes}");
     let codes = codes.to_dtype(DType::I64).unwrap();
     codes.save_safetensors("codes", "out.safetensors").unwrap();
     let codes = codes.unsqueeze(0).unwrap();
+
+    // TODO: Do i need the reference & here?
     let pcm = &state.model.lock().unwrap()
         .audio_encoder
         .decode_codes(&codes.to_device(&device).unwrap()).unwrap();
+    
     println!("{pcm}");
     let pcm = pcm.i((0, 0)).unwrap();
     let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true).unwrap();
