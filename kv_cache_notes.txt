@@ -1,8 +1,14 @@
-I'm getting a matmul error in the decoder step now: Error during inference: shape mismatch in matmul, lhs: [1, 16, 1, 19], rhs: [1, 16, 1, 64]
+TODO:
+----------
+Alright, i think I figure it out
 
-I'm pretty sure this has something to do with how the cache is created and be ing forwarded
+Using the mini model was giving me issues. The config files are different in each repo, and it makes me think one of them isn't being loaded properly
 
-Ther emight be a prblem with order. Each cache should correlate to an Attention struct
+So for now I can just use the large model
+
+Next steps are reverting to most recent branch, and trying again on AWS. Maybe copy the main-cpy.rs file just because i added debug printing to the Args param. That's what helbed me troubleshoot
+
+
 
 
 

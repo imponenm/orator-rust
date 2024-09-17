@@ -6,7 +6,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::parler_tts::{Config, Model};
 use tokenizers::Tokenizer;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct Args {
     /// Run on CPU rather than on GPU.
     #[arg(long)]
@@ -98,6 +98,7 @@ fn main() -> anyhow::Result<()> {
     use tracing_subscriber::prelude::*;
 
     let args = Args::parse();
+    println!("Args: {:?}", args);
 
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
