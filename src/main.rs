@@ -3,11 +3,13 @@ use clap::{Parser, ValueEnum};
 
 use candle_core::{DType, IndexOp, Tensor, Device};
 use candle_nn::VarBuilder;
-use candle_transformers::models::parler_tts::{Config, Model};
+use candle_transformers::models::parler_tts::{Config, Model, Decoder};
+use candle_transformers::models::t5;
 use tokenizers::{tokenizer, Tokenizer};
-use axum::response::IntoResponse;
-use axum::http::header;
+use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::body::Body;
+use axum::body::Bytes;
 use axum::Router;
 use axum::extract::State;
 use tokio::fs::File;
@@ -15,6 +17,8 @@ use tokio_util::io::ReaderStream;
 use axum::routing::post;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::io::Cursor;
+use std::io::Write;
 
 
 #[derive(Parser, Debug, Clone)]
@@ -110,6 +114,7 @@ struct AppState {
     device: Device,
     config: Config,
     args: Args,
+    vb: VarBuilder<'static>,
     // Add any other shared resources here
 }
 
@@ -196,7 +201,7 @@ async fn main() {
     let device = candle_examples::device(args.cpu).unwrap();
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device).unwrap() };
     let config: Config = serde_json::from_reader(std::fs::File::open(config).unwrap()).unwrap();
-    let mut model = Model::new(&config, vb).unwrap();
+    let mut model = Model::new(&config, vb.clone()).unwrap();
     let model_mutex = Mutex::new(model);
     println!("loaded the model in {:?}", start.elapsed());
 
@@ -206,6 +211,7 @@ async fn main() {
         device,
         config,
         args: args_clone,
+        vb,
         // Initialize other shared resources if any
     });
 
@@ -218,10 +224,11 @@ async fn main() {
 }
 
 async fn generate_audio(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let args = &state.args;
+    let args = state.args.clone();
     let tokenizer = &state.tokenizer;
     let device = &state.device;
     let config = &state.config;
+    let vb = &state.vb;
 
     let description_tokens = tokenizer
         .encode(args.description.to_string(), true)
@@ -245,11 +252,13 @@ async fn generate_audio(State(state): State<Arc<AppState>>) -> impl IntoResponse
     
     // Run inference on separate thread
     // TODO: Do i need the reference & here?
-    let codes = &state.model.lock().unwrap().generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
-    // {
-    //     let mut model = state.model.lock().unwrap();
-    //     let codes = *model.generate(&prompt_tokens, &description_tokens, lp, args.max_steps).unwrap();
-    // }
+    // let codes = &state.model.lock().unwrap().generate(&prompt_tokens, &description_tokens, lp, args.max_steps, &mut decoder, &mut text_encoder).unwrap();
+    let cloned_state = Arc::clone(&state);
+    let codes = tokio::task::spawn_blocking(move || {
+        let mut decoder = Decoder::new(&cloned_state.config.decoder, cloned_state.vb.pp("decoder")).unwrap();
+        let mut text_encoder = t5::T5EncoderModel::load(cloned_state.vb.pp("text_encoder"), &cloned_state.config.text_encoder).unwrap();
+        cloned_state.model.lock().unwrap().generate(&prompt_tokens, &description_tokens, lp, args.max_steps, &mut decoder, &mut text_encoder)
+    }).await.unwrap().unwrap();
 
     println!("generated codes\n{codes}");
     let codes = codes.to_dtype(DType::I64).unwrap();
@@ -260,27 +269,72 @@ async fn generate_audio(State(state): State<Arc<AppState>>) -> impl IntoResponse
     let pcm = &state.model.lock().unwrap()
         .audio_encoder
         .decode_codes(&codes.to_device(&device).unwrap()).unwrap();
-    
+
     println!("{pcm}");
     let pcm = pcm.i((0, 0)).unwrap();
     let pcm = candle_examples::audio::normalize_loudness(&pcm, 24_000, true).unwrap();
     let pcm = pcm.to_vec1::<f32>().unwrap();
-    let mut output = std::fs::File::create(&args.out_file).unwrap();
-    candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, config.audio_encoder.sampling_rate).unwrap();
-    println!("inference time: {:?}", start.elapsed());
-    
-    println!("Stream");
-    // let header = [
-    //     (header::CONTENT_TYPE, "audio/wav"),
-    //     (header::CONTENT_LENGTH, ""),
-    //     (header::TRANSFER_ENCODING, "chunked"),
-    //     (header::CACHE_CONTROL, "no-cache, must-revalidate"),
-    //     (header::PRAGMA, "no-cache"),
 
-    // ];
-    let file = File::open(&args.out_file).await.unwrap();
-    let stream = ReaderStream::new(file);
+    // Generate WAV data in memory
+    let wav_data = generate_wav_data(&pcm, state.config.audio_encoder.sampling_rate);
+    let body = Body::from(wav_data);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("audio/wav"));
+    headers.insert("Content-Disposition", HeaderValue::from_static("attachment; filename=\"generated_audio.wav\""));
+    println!("inference time: {:?}", start.elapsed());
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "audio/wav")
+        .header("Content-Disposition", "attachment; filename=\"generated_audio.wav\"")
+        .body(body)
+        .unwrap()
+
+    // let mut output = std::fs::File::create(&args.out_file).unwrap();
+    // candle_examples::wav::write_pcm_as_wav(&mut output, &pcm, config.audio_encoder.sampling_rate).unwrap();
+    // println!("inference time: {:?}", start.elapsed());
     
-    Body::from_stream(stream)
-    //Ok(())
+    // println!("Stream");
+    // let file = File::open(&args.out_file).await.unwrap();
+    // let stream = ReaderStream::new(file);
+    
+    // Body::from_stream(stream)
+}
+
+fn generate_wav_data(pcm: &[f32], sample_rate: u32) -> Bytes {
+    let mut cursor = Cursor::new(Vec::new());
+    
+    // Write WAV header
+    write_wav_header(&mut cursor, pcm.len() as u32, sample_rate).unwrap();
+    
+    // Write PCM data
+    for &sample in pcm {
+        let sample_i16 = (sample * 32767.0) as i16;
+        cursor.write_all(&sample_i16.to_le_bytes()).unwrap();
+    }
+
+    Bytes::from(cursor.into_inner())
+}
+
+fn write_wav_header(writer: &mut impl std::io::Write, num_samples: u32, sample_rate: u32) -> std::io::Result<()> {
+    let data_len = num_samples * 2; // 16-bit samples
+    let total_header_len = 44;
+    let total_len = total_header_len + data_len;
+
+    writer.write_all(b"RIFF")?;
+    writer.write_all(&(total_len - 8).to_le_bytes())?;
+    writer.write_all(b"WAVE")?;
+    writer.write_all(b"fmt ")?;
+    writer.write_all(&16u32.to_le_bytes())?; // fmt chunk size
+    writer.write_all(&1u16.to_le_bytes())?; // audio format (PCM)
+    writer.write_all(&1u16.to_le_bytes())?; // num channels
+    writer.write_all(&sample_rate.to_le_bytes())?;
+    writer.write_all(&(sample_rate * 2).to_le_bytes())?; // byte rate
+    writer.write_all(&2u16.to_le_bytes())?; // block align
+    writer.write_all(&16u16.to_le_bytes())?; // bits per sample
+    writer.write_all(b"data")?;
+    writer.write_all(&data_len.to_le_bytes())?;
+
+    Ok(())
 }

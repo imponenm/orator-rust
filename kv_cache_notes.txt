@@ -1,12 +1,9 @@
 TODO:
 ----------
-Alright, i think I figure it out
-
-Using the mini model was giving me issues. The config files are different in each repo, and it makes me think one of them isn't being loaded properly
-
-So for now I can just use the large model
-
-Next steps are reverting to most recent branch, and trying again on AWS. Maybe copy the main-cpy.rs file just because i added debug printing to the Args param. That's what helbed me troubleshoot
+- Done - Get LARGE model working first, since mini is being weird
+- Done - Axum webserver running single blocking generate() thread
+- Done - Axum server, single thread, using external kv_cache
+- Axum server, multi  thread, using external kv_cache
 
 
 

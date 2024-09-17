@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.87"
 axum = "0.7.5"
+bytes = "1.7.1"
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.6.1" }
 candle-examples = { git = "https://github.com/huggingface/candle.git", version = "0.6.1" }
 candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.6.1" }
