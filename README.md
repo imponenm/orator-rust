@@ -1,3 +1,8 @@
 # Orator-Rust
-This is an endpoint for running a text-to-speech endpoint. It's written in Rust and uses the Axum webserver framework to get around issues related to Python/FastAPI/GIL, which make it impossible to stream bytes back to the client as the model generates them, due to the blocking nature of FastAPI.
+This is an endpoint for running parler-TTS concurrently on a GPU.
 
+It's a slight modification of the parlerTTS model within Candle (https://github.com/huggingface/candle).
+
+The main difference is the KV cache is no longer stored within the ParlerTTS struct. Instead, you create a separate cache for each thread being run.
+
+It's worth noting this did not improve the performance of ParlerTTS, as it's a pretty computational intensive model. Still a fun project for learning though!
